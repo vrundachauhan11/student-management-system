@@ -1,0 +1,22 @@
+{
+  "name": "student-information-management-system",
+  "version": "1.0.0",
+  "description": "Deployment of a Three-Tier Cloud Architecture: React (Netlify) + Express (Render) + MongoDB Atlas (studentDB)",
+  "scripts": {
+    "test:backend": "npm --prefix backend test",
+    "build:frontend": "npm --prefix frontend run build",
+    "start:backend": "npm --prefix backend start",
+    "dev:backend": "npm --prefix backend run dev",
+    "dev:frontend": "npm --prefix frontend run dev"
+  },
+  "keywords": [
+    "three-tier-architecture",
+    "react",
+    "express",
+    "mongodb-atlas",
+    "render",
+    "netlify"
+  ],
+  "author": "",
+  "license": "ISC"
+}
