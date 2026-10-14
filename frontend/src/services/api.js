@@ -1,4 +1,18 @@
-const BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000/api';
+// Determine API base URL:
+// 1. Explicit VITE_API_BASE_URL environment variable (Netlify build settings or local .env)
+// 2. Production fallback: Deployed Render backend REST API
+// 3. Development fallback: Local Express server
+const getApiBaseUrl = () => {
+  if (import.meta.env.VITE_API_BASE_URL) {
+    return import.meta.env.VITE_API_BASE_URL;
+  }
+  if (import.meta.env.PROD) {
+    return 'https://student-management-api-36wp.onrender.com/api';
+  }
+  return 'http://localhost:5055/api';
+};
+
+const BASE_URL = getApiBaseUrl();
 
 /**
  * Custom request wrapper with error parsing and network failure protection
