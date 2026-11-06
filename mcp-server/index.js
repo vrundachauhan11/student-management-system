@@ -23,6 +23,30 @@ const CSS_PATH = path.join(FRONTEND_DIR, 'src', 'index.css');
 // Load environment variables from backend/.env
 dotenv.config({ path: path.join(BACKEND_DIR, '.env') });
 
+const RENDER_API_BASE = 'https://api.render.com/v1';
+
+async function callRenderApi(endpoint, options = {}) {
+  const apiKey = process.env.RENDER_API_KEY;
+  if (!apiKey) {
+    throw new Error('RENDER_API_KEY is not configured in backend/.env');
+  }
+  const url = `${RENDER_API_BASE}${endpoint.startsWith('/') ? '' : '/'}${endpoint}`;
+  const res = await fetch(url, {
+    ...options,
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+      ...(options.headers || {}),
+    },
+  });
+  const data = await res.json().catch(() => ({ status: res.status, text: res.statusText }));
+  if (!res.ok) {
+    throw new Error(data.message || `Render API error: ${res.status} ${res.statusText}`);
+  }
+  return data;
+}
+
 const THEME_PRESETS = {
   'dark': {
     '--color-bg': '#0f172a',
@@ -197,6 +221,73 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
+        name: 'render_list_services',
+        description: 'Lists all services hosted on your Render cloud account (service name, ID, type, repo, and live URLs)',
+        inputSchema: {
+          type: 'object',
+          properties: {},
+        },
+      },
+      {
+        name: 'render_trigger_deploy',
+        description: 'Triggers a new deployment of a Render service (e.g. student-management-api). Can clear build cache or deploy normal.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            serviceIdOrName: {
+              type: 'string',
+              description: 'Service ID (e.g. srv-db7mhfuq1p3s73d1534g) or service name (e.g. "student-management-api")',
+            },
+            clearCache: {
+              type: 'string',
+              enum: ['clear', 'do_not_clear'],
+              description: 'Whether to clear build cache on Render',
+            },
+          },
+          required: ['serviceIdOrName'],
+        },
+      },
+      {
+        name: 'render_get_service',
+        description: 'Gets details, environment variables, or latest deploys for a Render service',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            serviceIdOrName: {
+              type: 'string',
+              description: 'Service ID or service name',
+            },
+          },
+          required: ['serviceIdOrName'],
+        },
+      },
+      {
+        name: 'render_manage_env_vars',
+        description: 'Lists or updates environment variables on a Render service',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            serviceIdOrName: {
+              type: 'string',
+              description: 'Service ID or service name',
+            },
+            envVars: {
+              type: 'array',
+              description: 'Array of { key, value } environment variables to set or update',
+              items: {
+                type: 'object',
+                properties: {
+                  key: { type: 'string' },
+                  value: { type: 'string' },
+                },
+                required: ['key', 'value'],
+              },
+            },
+          },
+          required: ['serviceIdOrName'],
+        },
+      },
+      {
         name: 'read_project_file',
         description: 'Reads any file within the student-management-system repository',
         inputSchema: {
@@ -253,6 +344,21 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     ],
   };
 });
+
+// Helper to resolve service name to service ID on Render
+async function resolveRenderServiceId(serviceIdOrName) {
+  if (serviceIdOrName.startsWith('srv-')) {
+    return serviceIdOrName;
+  }
+  const services = await callRenderApi('/services');
+  const found = services.find(
+    (s) => s.service.name.toLowerCase() === serviceIdOrName.toLowerCase()
+  );
+  if (!found) {
+    throw new Error(`Render service '${serviceIdOrName}' not found. Available services: ${services.map(s => s.service.name).join(', ')}`);
+  }
+  return found.service.id;
+}
 
 // Handle Tool Calls
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
@@ -332,6 +438,85 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             },
           ],
         };
+      }
+
+      case 'render_list_services': {
+        const services = await callRenderApi('/services');
+        const formatted = services.map((s) => ({
+          name: s.service.name,
+          id: s.service.id,
+          type: s.service.type,
+          url: s.service.serviceDetails?.url || `https://${s.service.slug}.onrender.com`,
+          autoDeploy: s.service.autoDeploy,
+          updatedAt: s.service.updatedAt,
+        }));
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Render Services:\n${JSON.stringify(formatted, null, 2)}`,
+            },
+          ],
+        };
+      }
+
+      case 'render_trigger_deploy': {
+        const serviceId = await resolveRenderServiceId(args.serviceIdOrName);
+        const clearCache = args.clearCache || 'do_not_clear';
+        const deploy = await callRenderApi(`/services/${serviceId}/deploys`, {
+          method: 'POST',
+          body: JSON.stringify({ clearCache }),
+        });
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `🚀 Render Deploy Triggered!\nService: ${args.serviceIdOrName} (${serviceId})\nDeploy ID: ${deploy.id}\nStatus: ${deploy.status}\nCommit: ${deploy.commit?.message || 'Latest HEAD'}\nCreated At: ${deploy.createdAt}`,
+            },
+          ],
+        };
+      }
+
+      case 'render_get_service': {
+        const serviceId = await resolveRenderServiceId(args.serviceIdOrName);
+        const service = await callRenderApi(`/services/${serviceId}`);
+        const deploys = await callRenderApi(`/services/${serviceId}/deploys?limit=3`).catch(() => []);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Render Service Details:\n${JSON.stringify({ service: service.service || service, latestDeploys: deploys }, null, 2)}`,
+            },
+          ],
+        };
+      }
+
+      case 'render_manage_env_vars': {
+        const serviceId = await resolveRenderServiceId(args.serviceIdOrName);
+        if (args.envVars && Array.isArray(args.envVars)) {
+          const updated = await callRenderApi(`/services/${serviceId}/env-vars`, {
+            method: 'PUT',
+            body: JSON.stringify(args.envVars),
+          });
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `✅ Updated environment variables for ${args.serviceIdOrName}:\n${JSON.stringify(updated, null, 2)}`,
+              },
+            ],
+          };
+        } else {
+          const vars = await callRenderApi(`/services/${serviceId}/env-vars`);
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `Environment variables for ${args.serviceIdOrName}:\n${JSON.stringify(vars, null, 2)}`,
+              },
+            ],
+          };
+        }
       }
 
       case 'get_student_schema': {
