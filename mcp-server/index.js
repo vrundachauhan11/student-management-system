@@ -229,6 +229,73 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
+        name: 'render_clone_service',
+        description: 'Directly clones an existing Render service (e.g. student-management-api) to a new service name (e.g. student-management-api-112), copying its repo, settings, and environment variables.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            sourceServiceIdOrName: {
+              type: 'string',
+              description: 'Service name (e.g. "student-management-api") or service ID to clone from',
+            },
+            newServiceName: {
+              type: 'string',
+              description: 'The name for the newly cloned Render service (e.g. "student-management-api-112")',
+            },
+            copyEnvVars: {
+              type: 'boolean',
+              description: 'Whether to copy all environment variables to the new clone (default: true)',
+            },
+          },
+          required: ['sourceServiceIdOrName', 'newServiceName'],
+        },
+      },
+      {
+        name: 'render_create_service',
+        description: 'Creates a new web service on Render connected to a GitHub repository',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            name: {
+              type: 'string',
+              description: 'Name of the new Render service',
+            },
+            repo: {
+              type: 'string',
+              description: 'GitHub repository URL',
+            },
+            branch: {
+              type: 'string',
+              description: 'Git branch to deploy (default: "main")',
+            },
+            rootDir: {
+              type: 'string',
+              description: 'Root directory (e.g. "backend/")',
+            },
+            plan: {
+              type: 'string',
+              enum: ['free', 'starter'],
+              description: 'Plan tier (default: "free")',
+            },
+          },
+          required: ['name'],
+        },
+      },
+      {
+        name: 'render_delete_service',
+        description: 'Deletes a Render service by name or ID',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            serviceIdOrName: {
+              type: 'string',
+              description: 'Service name or ID to delete',
+            },
+          },
+          required: ['serviceIdOrName'],
+        },
+      },
+      {
         name: 'render_trigger_deploy',
         description: 'Triggers a new deployment of a Render service (e.g. student-management-api). Can clear build cache or deploy normal.',
         inputSchema: {
@@ -455,6 +522,130 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             {
               type: 'text',
               text: `Render Services:\n${JSON.stringify(formatted, null, 2)}`,
+            },
+          ],
+        };
+      }
+
+      case 'render_clone_service': {
+        const sourceId = await resolveRenderServiceId(args.sourceServiceIdOrName);
+        const source = await callRenderApi(`/services/${sourceId}`);
+        const sourceDetails = source.service || source;
+
+        // Fetch source environment variables if copyEnvVars is true (default true)
+        const copyEnv = args.copyEnvVars !== false;
+        let envVars = [];
+        if (copyEnv) {
+          envVars = await callRenderApi(`/services/${sourceId}/env-vars`).catch(() => []);
+        }
+
+        const createPayload = {
+          type: sourceDetails.type || 'web_service',
+          name: args.newServiceName,
+          ownerId: sourceDetails.ownerId,
+          repo: sourceDetails.repo,
+          branch: sourceDetails.branch || 'main',
+          rootDir: sourceDetails.rootDir || '',
+          autoDeploy: sourceDetails.autoDeploy || 'yes',
+          serviceDetails: {
+            env: sourceDetails.serviceDetails?.env || 'node',
+            plan: sourceDetails.serviceDetails?.plan || 'free',
+            region: sourceDetails.serviceDetails?.region || 'singapore',
+            envSpecificDetails: sourceDetails.serviceDetails?.envSpecificDetails || {
+              buildCommand: 'npm install',
+              startCommand: 'npm start',
+            },
+          },
+        };
+
+        const created = await callRenderApi('/services', {
+          method: 'POST',
+          body: JSON.stringify(createPayload),
+        });
+
+        const newService = created.service || created;
+
+        // Copy env vars if any
+        if (copyEnv && envVars.length > 0) {
+          const formattedEnvVars = envVars.map((v) => ({
+            key: v.envVar ? v.envVar.key : v.key,
+            value: v.envVar ? v.envVar.value : v.value,
+          }));
+          await callRenderApi(`/services/${newService.id}/env-vars`, {
+            method: 'PUT',
+            body: JSON.stringify(formattedEnvVars),
+          }).catch((e) => console.error('Error copying env vars:', e.message));
+        }
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `✅ Successfully cloned Render service!\n\n` +
+                    `- New Service Name: ${newService.name}\n` +
+                    `- Service ID: ${newService.id}\n` +
+                    `- Dashboard URL: ${newService.dashboardUrl}\n` +
+                    `- Live URL: ${newService.serviceDetails?.url || `https://${newService.slug}.onrender.com`}\n` +
+                    `- Copied ${envVars.length} Environment Variables: ${copyEnv ? 'Yes' : 'No'}\n` +
+                    `- Initial Deploy: Started (Deploy ID: ${created.deployId || 'N/A'})`,
+            },
+          ],
+        };
+      }
+
+      case 'render_create_service': {
+        const owners = await callRenderApi('/owners');
+        const ownerId = owners[0]?.owner?.id;
+        if (!ownerId) throw new Error('No Render owner found for this API key.');
+
+        const createPayload = {
+          type: 'web_service',
+          name: args.name,
+          ownerId,
+          repo: args.repo || 'https://github.com/vrundachauhan11/student-management-system',
+          branch: args.branch || 'main',
+          rootDir: args.rootDir !== undefined ? args.rootDir : 'backend/',
+          autoDeploy: 'yes',
+          serviceDetails: {
+            env: 'node',
+            plan: args.plan || 'free',
+            region: 'singapore',
+            envSpecificDetails: {
+              buildCommand: 'npm install',
+              startCommand: 'npm start',
+            },
+          },
+        };
+
+        const created = await callRenderApi('/services', {
+          method: 'POST',
+          body: JSON.stringify(createPayload),
+        });
+
+        const s = created.service || created;
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `✅ Created new Render service '${s.name}'!\n` +
+                    `- Service ID: ${s.id}\n` +
+                    `- Live URL: ${s.serviceDetails?.url || `https://${s.slug}.onrender.com`}\n` +
+                    `- Dashboard URL: ${s.dashboardUrl}`,
+            },
+          ],
+        };
+      }
+
+      case 'render_delete_service': {
+        const serviceId = await resolveRenderServiceId(args.serviceIdOrName);
+        await callRenderApi(`/services/${serviceId}`, {
+          method: 'DELETE',
+        });
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `✅ Render service '${args.serviceIdOrName}' (${serviceId}) has been deleted successfully.`,
             },
           ],
         };
